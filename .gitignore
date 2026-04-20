@@ -1,0 +1,12 @@
+# Environment
+venv/
+.env
+__pycache__/
+*.pyc
+.DS_Store
+
+# Results are committed for reproducibility
+# But not model weights
+*.bin
+*.pt
+*.safetensors
