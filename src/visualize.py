@@ -169,53 +169,31 @@ def plot_perturbation_delta(analysis: dict):
 
 
 # ──────────────────────────────────────────────────────────────────
-# 6. Multi-task analysis plots
+# 6. Confidence score distribution
 # ──────────────────────────────────────────────────────────────────
 
-def plot_adversarial_tags(analysis: dict):
-    tags = analysis.get("adversarial_tag_distribution", {})
-    if not tags:
-        return
-    names = sorted(tags.keys(), key=lambda k: tags[k], reverse=True)
-    counts = [tags[n] for n in names]
+def plot_confidence_distribution(df: pd.DataFrame):
+    baseline = df[df["perturbation"] == "none"]
 
-    fig, ax = plt.subplots(figsize=(10, 5))
-    ax.barh(range(len(names)), counts, color=PALETTE[3])
-    ax.set_yticks(range(len(names)))
-    ax.set_yticklabels(names)
-    ax.set_xlabel("Count")
-    ax.set_title("Adversarial Tag Distribution (Baseline)")
-    ax.invert_yaxis()
-    plt.tight_layout()
-    plt.savefig(FIGURES_DIR / "adversarial_tags.png", dpi=150)
-    plt.close()
-
-
-def plot_intent_tone(analysis: dict):
     fig, axes = plt.subplots(1, 2, figsize=(14, 5))
 
-    # Intent
-    intent = analysis.get("intent_distribution", {})
-    if intent:
-        names = list(intent.keys())
-        vals = list(intent.values())
-        axes[0].barh(names, vals, color=PALETTE[0])
-        axes[0].set_xlabel("Count")
-        axes[0].set_title("Intent Distribution (Baseline)")
-        axes[0].invert_yaxis()
+    for i, expected in enumerate(["safe", "unsafe"]):
+        sub = baseline[baseline["expected_label"] == expected]
+        correct = sub[sub["predicted_label"] == sub["expected_label"]]["confidence"]
+        wrong = sub[sub["predicted_label"] != sub["expected_label"]]["confidence"]
 
-    # Tone
-    tone = analysis.get("tone_distribution", {})
-    if tone:
-        names = list(tone.keys())
-        vals = list(tone.values())
-        axes[1].barh(names, vals, color=PALETTE[1])
-        axes[1].set_xlabel("Count")
-        axes[1].set_title("Tone of Voice Distribution (Baseline)")
-        axes[1].invert_yaxis()
+        ax = axes[i]
+        if len(correct) > 0:
+            ax.hist(correct, bins=20, alpha=0.7, label="Correct", color=PALETTE[0], range=(0.5, 1.0))
+        if len(wrong) > 0:
+            ax.hist(wrong, bins=20, alpha=0.7, label="Wrong", color=PALETTE[3], range=(0.5, 1.0))
+        ax.set_xlabel("Confidence Score")
+        ax.set_ylabel("Count")
+        ax.set_title(f"Confidence Distribution — Expected: {expected}")
+        ax.legend()
 
     plt.tight_layout()
-    plt.savefig(FIGURES_DIR / "intent_tone.png", dpi=150)
+    plt.savefig(FIGURES_DIR / "confidence_distribution.png", dpi=150)
     plt.close()
 
 
@@ -239,11 +217,8 @@ def generate_all_plots():
     plot_perturbation_delta(analysis)
     print("  + perturbation_delta.png")
 
-    plot_adversarial_tags(analysis)
-    print("  + adversarial_tags.png")
-
-    plot_intent_tone(analysis)
-    print("  + intent_tone.png")
+    plot_confidence_distribution(df)
+    print("  + confidence_distribution.png")
 
     print(f"\nAll figures saved to {FIGURES_DIR}/")
 

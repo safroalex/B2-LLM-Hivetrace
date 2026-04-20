@@ -1,13 +1,12 @@
 """
-Main experiment runner: GLiNER Guard Uniencoder adversarial robustness evaluation.
+Main experiment runner: HiveTrace Guard (ModernBERT) adversarial robustness evaluation.
 
 Methodology:
 1. Baseline evaluation — test model on clean (unperturbed) prompts
 2. Adversarial evaluation — apply each perturbation technique and re-test
-3. Multi-task analysis — evaluate safety, adversarial, harmful, intent, tone tasks
-4. Compute metrics: TPR, FPR, Accuracy, F1, ASR (Attack Success Rate)
-5. Statistical analysis — confidence intervals, per-category breakdown
-6. Export results to CSV + generate visualizations
+3. Compute metrics: TPR, FPR, Accuracy, F1, ASR (Attack Success Rate)
+4. Statistical analysis — confidence intervals, per-category breakdown
+5. Export results to CSV + JSON analysis
 """
 
 import os
@@ -41,6 +40,8 @@ SEED = 42
 random.seed(SEED)
 np.random.seed(SEED)
 
+HF_TOKEN = os.environ.get("HF_TOKEN", "")
+
 
 def compute_metrics(df: pd.DataFrame) -> dict:
     """Compute classification metrics from a results DataFrame."""
@@ -51,7 +52,7 @@ def compute_metrics(df: pd.DataFrame) -> dict:
 
     total = len(df)
     accuracy = (tp + tn) / total if total > 0 else 0
-    tpr = tp / (tp + fn) if (tp + fn) > 0 else 0  # recall / sensitivity
+    tpr = tp / (tp + fn) if (tp + fn) > 0 else 0
     fpr = fp / (fp + tn) if (fp + tn) > 0 else 0
     precision = tp / (tp + fp) if (tp + fp) > 0 else 0
     f1 = 2 * precision * tpr / (precision + tpr) if (precision + tpr) > 0 else 0
@@ -89,24 +90,21 @@ def run_experiment(classifier: HiveTraceGuardClassifier) -> pd.DataFrame:
     dataset = build_dataset()
     all_results = []
 
-    # ── Phase 1: Baseline evaluation (full multi-task) ──
+    # ── Phase 1: Baseline evaluation ──
     print("\n" + "=" * 70)
     print("PHASE 1: BASELINE EVALUATION (no perturbations)")
     print("=" * 70)
 
     for item in tqdm(dataset, desc="Baseline"):
-        result = classifier.classify_full(item["text"])
+        result = classifier.classify(item["text"])
         all_results.append({
             **item,
             "perturbed_text": item["text"],
-            "predicted_label": result["safety"],
-            "adversarial_tags": json.dumps(result["adversarial"], ensure_ascii=False),
-            "harmful_tags": json.dumps(result["harmful"], ensure_ascii=False),
-            "intent": result["intent"],
-            "tone": result["tone"],
+            "predicted_label": result["label"],
+            "confidence": result["score"],
         })
 
-    # ── Phase 2: Adversarial perturbations (safety task) ──
+    # ── Phase 2: Adversarial perturbations ──
     print("\n" + "=" * 70)
     print("PHASE 2: ADVERSARIAL PERTURBATION EVALUATION")
     print("=" * 70)
@@ -139,7 +137,7 @@ def run_experiment(classifier: HiveTraceGuardClassifier) -> pd.DataFrame:
             except Exception:
                 perturbed = item["text"]
 
-            result = classifier.classify_full(perturbed)
+            result = classifier.classify(perturbed)
             all_results.append({
                 "text": item["text"],
                 "expected_label": item["expected_label"],
@@ -147,11 +145,8 @@ def run_experiment(classifier: HiveTraceGuardClassifier) -> pd.DataFrame:
                 "language": item["language"],
                 "perturbation": pert_name,
                 "perturbed_text": perturbed,
-                "predicted_label": result["safety"],
-                "adversarial_tags": json.dumps(result["adversarial"], ensure_ascii=False),
-                "harmful_tags": json.dumps(result["harmful"], ensure_ascii=False),
-                "intent": result["intent"],
-                "tone": result["tone"],
+                "predicted_label": result["label"],
+                "confidence": result["score"],
             })
 
     return pd.DataFrame(all_results)
@@ -167,22 +162,21 @@ def analyze_results(df: pd.DataFrame) -> dict:
 
     # 2. Baseline per category
     analysis["baseline_per_category"] = {}
-    for cat in baseline["category"].unique():
+    for cat in sorted(baseline["category"].unique()):
         cat_df = baseline[baseline["category"] == cat]
         analysis["baseline_per_category"][cat] = compute_metrics(cat_df)
 
     # 3. Baseline per language
     analysis["baseline_per_language"] = {}
-    for lang in baseline["language"].unique():
+    for lang in sorted(baseline["language"].unique()):
         lang_df = baseline[baseline["language"] == lang]
         analysis["baseline_per_language"][lang] = compute_metrics(lang_df)
 
-    # 4. Per-perturbation metrics (unsafe prompts only — ASR focus)
+    # 4. Per-perturbation metrics
     analysis["perturbation_asr"] = {}
     for pert in df["perturbation"].unique():
         pert_df = df[df["perturbation"] == pert]
         metrics = compute_metrics(pert_df)
-        # Confidence interval for ASR
         unsafe_df = pert_df[pert_df["expected_label"] == "unsafe"]
         n = len(unsafe_df)
         ci = wilson_ci(metrics["asr"], n)
@@ -200,25 +194,20 @@ def analyze_results(df: pd.DataFrame) -> dict:
             if len(sub) > 0:
                 analysis["perturbation_category"][pert][cat] = compute_metrics(sub)
 
-    # 6. Multi-task analysis (adversarial tags, intent, tone on baseline)
+    # 6. Confidence score statistics
     baseline = df[df["perturbation"] == "none"]
-    
-    # Adversarial tag distribution
-    adv_tags = {}
-    for _, row in baseline.iterrows():
-        tags = json.loads(row["adversarial_tags"]) if isinstance(row["adversarial_tags"], str) else row["adversarial_tags"]
-        for tag in tags:
-            if tag != "none":
-                adv_tags[tag] = adv_tags.get(tag, 0) + 1
-    analysis["adversarial_tag_distribution"] = adv_tags
-
-    # Intent distribution
-    intent_dist = baseline["intent"].value_counts().to_dict()
-    analysis["intent_distribution"] = intent_dist
-
-    # Tone distribution
-    tone_dist = baseline["tone"].value_counts().to_dict()
-    analysis["tone_distribution"] = tone_dist
+    conf_stats = {}
+    for label in ["safe", "unsafe"]:
+        sub = baseline[baseline["expected_label"] == label]
+        correct = sub[sub["predicted_label"] == sub["expected_label"]]
+        wrong = sub[sub["predicted_label"] != sub["expected_label"]]
+        conf_stats[label] = {
+            "correct_mean_conf": round(correct["confidence"].mean(), 4) if len(correct) > 0 else 0,
+            "correct_std_conf": round(correct["confidence"].std(), 4) if len(correct) > 0 else 0,
+            "wrong_mean_conf": round(wrong["confidence"].mean(), 4) if len(wrong) > 0 else 0,
+            "wrong_std_conf": round(wrong["confidence"].std(), 4) if len(wrong) > 0 else 0,
+        }
+    analysis["confidence_stats"] = conf_stats
 
     return analysis
 
@@ -246,6 +235,11 @@ def print_summary(analysis: dict):
         print(f"  {lang}: Accuracy={m['accuracy']:.4f}  TPR={m['tpr']:.4f}  "
               f"FPR={m['fpr']:.4f}  ASR={m['asr']:.4f}")
 
+    print(f"\n{'CONFIDENCE SCORES':^70}")
+    for label, stats in analysis["confidence_stats"].items():
+        print(f"  {label}: correct={stats['correct_mean_conf']:.3f}±{stats['correct_std_conf']:.3f}  "
+              f"wrong={stats['wrong_mean_conf']:.3f}±{stats['wrong_std_conf']:.3f}")
+
     print(f"\n{'PERTURBATION IMPACT (ASR on unsafe prompts)':^70}")
     print(f"  {'Perturbation':<22} {'ASR':>7} {'95% CI':>18} {'Acc':>7} {'TPR':>7} {'N':>6}")
     print("  " + "-" * 68)
@@ -255,33 +249,20 @@ def print_summary(analysis: dict):
     )
     for pert, m in sorted_perts:
         ci = f"[{m.get('asr_ci_lower', 0):.3f}, {m.get('asr_ci_upper', 0):.3f}]"
-        print(f"  {pert:<22} {m['asr']:>7.4f} {ci:>18} {m['accuracy']:>7.4f} "
+        print(f"  {pert:<22} {m['asr']:>7.4f} {m['accuracy']:>7.4f} "
               f"{m['tpr']:>7.4f} {m.get('n_samples', m['total']):>6}")
-
-    cs = analysis.get("adversarial_tag_distribution", {})
-    print(f"\n{'ADVERSARIAL TAG DISTRIBUTION (baseline)':^70}")
-    for tag, count in sorted(cs.items(), key=lambda x: -x[1]):
-        print(f"  {tag:<30} {count:>5}")
-
-    print(f"\n{'INTENT DISTRIBUTION (baseline)':^70}")
-    for intent, count in sorted(analysis.get("intent_distribution", {}).items(), key=lambda x: -x[1]):
-        print(f"  {intent:<30} {count:>5}")
-
-    print(f"\n{'TONE DISTRIBUTION (baseline)':^70}")
-    for tone, count in sorted(analysis.get("tone_distribution", {}).items(), key=lambda x: -x[1]):
-        print(f"  {tone:<30} {count:>5}")
 
 
 def main():
     print("=" * 70)
-    print("GLiNER Guard Uniencoder — Adversarial Robustness Evaluation")
+    print("HiveTrace Guard (ModernBERT) — Adversarial Robustness Evaluation")
     print(f"Date: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    print(f"Model: hivetrace/gliner-guard-uniencoder")
+    print(f"Model: hivetrace/hivetrace-guard-base-2025-10-23")
     print("=" * 70)
 
     # Initialize classifier
     print("\nLoading model...")
-    classifier = HiveTraceGuardClassifier()
+    classifier = HiveTraceGuardClassifier(token=HF_TOKEN)
     print("Model loaded.")
 
     # Run experiment

@@ -1,14 +1,14 @@
-# Adversarial Robustness Evaluation of GLiNER Guard Uniencoder
+# Adversarial Robustness Evaluation of HiveTrace Guard
 
 **Курс:** Безопасность LLM и агентных систем  
-**Модель:** [`hivetrace/gliner-guard-uniencoder`](https://huggingface.co/hivetrace/gliner-guard-uniencoder) (147M params, mmBERT-based, GLiNER2 architecture)  
+**Модель:** `hivetrace/hivetrace-guard-base-2025-10-23` (ModernBERT, 22 layers, 768 hidden, binary classifier)  
 **Задача:** Оценка устойчивости guardrail-классификатора к adversarial text perturbations  
 
 ---
 
 ## Цель исследования
 
-Оценить робастность мультизадачной guardrail-модели GLiNER Guard Uniencoder к различным типам adversarial текстовых пертурбаций, включая:
+Оценить робастность guardrail-модели HiveTrace Guard к различным типам adversarial текстовых пертурбаций, включая:
 - символьные атаки (homoglyphs, zero-width characters, leetspeak)
 - структурные трансформации (dot-splitting, markdown/HTML injection)
 - семантические обёртки (academic/roleplay/negation framing)
@@ -21,6 +21,9 @@
 python3 -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
 
+# Установить HF_TOKEN (модель приватная)
+export HF_TOKEN="your_token_here"
+
 # Запустить эксперимент
 python src/run_experiment.py
 
@@ -32,7 +35,7 @@ python src/visualize.py
 
 ```
 ├── src/
-│   ├── classifier.py       # Обёртка над GLiNER Guard Uniencoder
+│   ├── classifier.py       # Обёртка над HiveTrace Guard (transformers pipeline)
 │   ├── dataset.py           # Курированный датасет (150 промптов, 7 категорий)
 │   ├── perturbations.py     # 17 функций adversarial-пертурбаций
 │   ├── run_experiment.py    # Основной скрипт эксперимента
@@ -51,27 +54,27 @@ python src/visualize.py
 
 | Метрика | Значение |
 |---------|----------|
-| Accuracy | 86.0% |
-| TPR (Recall) | 82.0% |
-| FPR | 6.0% |
-| F1 | 88.7% |
-| ASR | 18.0% |
+| Accuracy | **96.7%** |
+| TPR (Recall) | **96.0%** |
+| FPR | 2.0% |
+| F1 | **97.5%** |
+| ASR | **4.0%** |
 
 ### Наиболее эффективные пертурбации
 
 | Пертурбация | ASR | Δ от baseline |
 |-------------|-----|---------------|
-| dot_split (b.o.m.b) | **97.0%** | +79.0 pp |
-| transliteration (RU→LAT) | **94.0%** | +76.0 pp |
-| code_switch (RU/EN mix) | **40.0%** | +22.0 pp |
-| leetspeak (4→a, 3→e) | **39.0%** | +21.0 pp |
+| dot_split (b.o.m.b) | **60.0%** | +56.0 pp |
+| transliteration (RU→LAT) | **36.0%** | +32.0 pp |
+| code_switch (RU/EN mix) | **20.0%** | +16.0 pp |
+| char_swap | **17.0%** | +13.0 pp |
 
 ### Критические уязвимости
 
-1. **Prompt injection — слепое пятно:** Baseline ASR = 70% (модель пропускает 14 из 20 prompt injection без каких-либо пертурбаций)
-2. **Dot-splitting — катастрофический обход:** ASR = 97%, модель полностью теряет способность детекции при вставке точек между символами
-3. **Transliteration — кросс-скриптовая уязвимость:** ASR = 94%, перевод русского текста в латиницу практически полностью обходит классификатор
-4. **Hate speech & harmful instructions — высокая устойчивость:** ASR = 0% на baseline, модель стабильно детектирует явно вредоносный контент
+1. **Dot-splitting — главная уязвимость:** ASR = 60%, модель теряет значительную часть способности детекции при вставке точек между символами (особенно для harmful instructions: 65%, hate speech: 70%, social engineering: 70%)
+2. **Transliteration — кросс-скриптовая уязвимость:** ASR = 36%, перевод русского текста в латиницу существенно обходит классификатор (harmful instructions: 60%)
+3. **Code-switching:** ASR = 20%, смешение RU/EN снижает эффективность детекции
+4. **Высокая устойчивость к обёрткам:** markdown_wrap, html_comment, base64_hint — ASR = 0%, модель полностью устойчива к структурным обёрткам (хотя html_comment вызывает рост FPR)
 
 ### ASR Heatmap: Perturbation × Category
 
@@ -87,6 +90,6 @@ python src/visualize.py
 
 ## References
 
-- HiveTrace GLiNER Guard Uniencoder — [HuggingFace](https://huggingface.co/hivetrace/gliner-guard-uniencoder)
-- GLiNER2 Library — [GitHub](https://github.com/urchade/GLiNER)
-- jhu-clsp/mmBERT — [HuggingFace](https://huggingface.co/jhu-clsp/mmBERT-small)
+- HiveTrace Guard — приватная модель на HuggingFace
+- ModernBERT Architecture — [HuggingFace](https://huggingface.co/docs/transformers/model_doc/modernbert)
+- jhu-clsp/mmBERT-base — [HuggingFace](https://huggingface.co/jhu-clsp/mmBERT-base)

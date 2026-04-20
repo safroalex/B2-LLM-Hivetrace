@@ -1,103 +1,46 @@
 """
-GLiNER Guard Uniencoder — Classifier Wrapper.
+HiveTrace Guard (ModernBERT) — Classifier Wrapper.
 
-Wraps hivetrace/gliner-guard-uniencoder for multi-task guardrail evaluation:
-  - Safety classification (safe / unsafe)
-  - Adversarial detection (jailbreak, prompt injection, etc.)
-  - Harmful content detection (violence, hate speech, etc.)
-  - Intent classification
-  - Tone of voice classification
-  - PII / NER extraction
+Binary safety classifier: safe / unsafe.
+Model: hivetrace/hivetrace-guard-base-2025-10-23
+Architecture: ModernBertForSequenceClassification (22 layers, 768 hidden)
 """
 
-from typing import Optional, Dict, Any, List
-from gliner2 import GLiNER2
+import os
+from typing import Dict, Any, List
 
-
-# Label sets (from model card)
-SAFETY_LABELS = ["safe", "unsafe"]
-
-ADVERSARIAL_LABELS = [
-    "none", "instruction_override", "jailbreak_persona",
-    "jailbreak_hypothetical", "data_exfiltration", "jailbreak_roleplay",
-]
-
-HARMFUL_LABELS = [
-    "none", "dangerous_instructions", "harassment",
-    "sexual_content", "violence", "hate_speech", "fraud",
-    "pii_exposure", "discrimination", "misinformation", "weapons",
-]
-
-INTENT_LABELS = [
-    "informational", "conversational", "instructional",
-    "adversarial", "creative", "threatening",
-]
-
-TOV_LABELS = [
-    "neutral", "aggressive", "manipulative", "formal", "distressed",
-]
-
-PII_LABELS = [
-    "person", "company", "email", "street", "phone",
-    "city", "country", "date_of_birth",
-]
+from transformers import pipeline
 
 
 class HiveTraceGuardClassifier:
-    """Wrapper around GLiNER Guard Uniencoder model."""
+    """Wrapper around HiveTrace Guard ModernBERT binary classifier."""
 
-    MODEL_ID = "hivetrace/gliner-guard-uniencoder"
+    MODEL_ID = "hivetrace/hivetrace-guard-base-2025-10-23"
 
-    def __init__(self):
-        self.model = GLiNER2.from_pretrained(self.MODEL_ID)
-
-        # Build full schema (all tasks)
-        self.full_schema = (
-            self.model.create_schema()
-            .entities(entity_types=PII_LABELS, threshold=0.4)
-            .classification(task="safety", labels=SAFETY_LABELS)
-            .classification(task="adversarial", labels=ADVERSARIAL_LABELS, multi_label=True)
-            .classification(task="harmful", labels=HARMFUL_LABELS, multi_label=True)
-            .classification(task="intent", labels=INTENT_LABELS)
-            .classification(task="tone", labels=TOV_LABELS)
+    def __init__(self, token: str | None = None):
+        tok = token or os.environ.get("HF_TOKEN", "")
+        self.pipe = pipeline(
+            "text-classification",
+            model=self.MODEL_ID,
+            token=tok,
+            device=-1,  # CPU
         )
 
-        # Safety-only schema (for fast evaluation)
-        self.safety_schema = (
-            self.model.create_schema()
-            .classification(task="safety", labels=SAFETY_LABELS)
-        )
-
-    def classify_safety(self, text: str) -> Dict[str, Any]:
-        """Classify text as safe/unsafe (minimal schema)."""
-        result = self.model.extract(text, schema=self.safety_schema)
+    def classify(self, text: str) -> Dict[str, Any]:
+        """Classify a single text. Returns label and confidence score."""
+        result = self.pipe(text, truncation=True, max_length=8192)[0]
         return {
-            "text": text,
-            "label": result.get("safety", "unknown"),
+            "label": result["label"],
+            "score": round(result["score"], 4),
         }
 
-    def classify_full(self, text: str) -> Dict[str, Any]:
-        """Run all classification tasks on text."""
-        result = self.model.extract(text, schema=self.full_schema)
-        return {
-            "text": text,
-            "safety": result.get("safety", "unknown"),
-            "adversarial": result.get("adversarial", []),
-            "harmful": result.get("harmful", []),
-            "intent": result.get("intent", "unknown"),
-            "tone": result.get("tone", "unknown"),
-            "entities": result.get("entities", {}),
-        }
-
-    def classify_batch_safety(self, texts: List[str]) -> List[Dict[str, Any]]:
-        """Classify a list of texts (safety only)."""
-        results = []
-        for text in texts:
-            results.append(self.classify_safety(text))
-        return results
-
-    def classify_batch_full(self, texts: List[str]) -> List[Dict[str, Any]]:
-        """Classify a list of texts (all tasks)."""
+    def classify_batch(self, texts: List[str], batch_size: int = 16) -> List[Dict[str, Any]]:
+        """Classify a batch of texts."""
+        results = self.pipe(texts, truncation=True, max_length=8192, batch_size=batch_size)
+        return [
+            {"label": r["label"], "score": round(r["score"], 4)}
+            for r in results
+        ]
         results = []
         for text in texts:
             results.append(self.classify_full(text))
